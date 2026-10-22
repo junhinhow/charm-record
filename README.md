@@ -12,9 +12,23 @@ go get github.com/junhinhow/charm-record
 
 ## Usage
 
-A minimal model:
+A complete test file that records on demand and replays by default:
 
 ```go
+package counter
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/junhinhow/charm-record"
+)
+
+var update = flag.Bool("update", false, "record cassettes")
+
 type Model struct{ Count int }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -29,37 +43,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() tea.View {
 	return tea.NewView(fmt.Sprintf("count=%d", m.Count))
 }
-```
 
-### Record a session in a test
+func TestIncrementSession(t *testing.T) {
+	const path = "testdata/increment.cassette.json"
 
-```go
-func TestRecordSession(t *testing.T) {
-	rec := record.NewRecorder(Model{}, 80, 24)
-	rec.AddMeta("scenario", "increment")
-
-	rec.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	rec.Update(tea.KeyPressMsg{Code: '+', Text: "+"})
-	rec.Update(tea.KeyPressMsg{Code: '+', Text: "+"})
-
-	if err := rec.Save("testdata/increment.cassette.json"); err != nil {
-		t.Fatal(err)
+	if *update {
+		rec := record.NewRecorder(Model{}, 80, 24)
+		rec.AddMeta("scenario", "increment")
+		rec.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		rec.Update(tea.KeyPressMsg{Code: '+', Text: "+"})
+		rec.Update(tea.KeyPressMsg{Code: '+', Text: "+"})
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := rec.Save(path); err != nil {
+			t.Fatal(err)
+		}
 	}
-}
-```
 
-The cassette is plain, indented JSON. `At` is the only time-related field: it
-stores milliseconds relative to the start of the recording.
-
-### Replay in CI
-
-```go
-func TestReplaySession(t *testing.T) {
-	c, err := record.Load("testdata/increment.cassette.json")
+	c, err := record.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	rep, err := record.NewReplayer(Model{}, c)
 	if err != nil {
 		t.Fatal(err)
@@ -67,17 +72,22 @@ func TestReplaySession(t *testing.T) {
 	if err := rep.Run(); err != nil {
 		t.Fatal(err)
 	}
-
-	frames := rep.Frames() // one view per event, in order
 	if got, want := rep.View().Content, "count=2"; got != want {
 		t.Fatalf("final view = %q, want %q", got, want)
 	}
-	_ = frames // feed them to golden snapshots if you like
 }
 ```
 
-No TTY, no `time.Sleep`, and no real timers are involved: the same cassette
-always produces the same frames.
+Record once and commit the cassette:
+
+```bash
+go test ./... -run TestIncrementSession -update
+```
+
+CI just runs `go test ./...`: replay needs no TTY, no `time.Sleep`, and no real
+timers. The same cassette always produces the same frames. The cassette is
+plain, indented JSON; `At` is the only time-related field and stores
+milliseconds relative to the start of the recording.
 
 ### Custom messages
 
@@ -134,7 +144,7 @@ The registry is keyed by `reflect.Type.String()` (for example
 - **Unserializable messages.** If `json.Marshal` fails, the event is stored as
   `{"__unserializable": "<type>"}` and counted in `Meta` under
   `MetaUnserializable`. Replay skips it, appends a warning, and continues. A
-  registered type missing from the binary is handled the same way.
+  type that is not registered in the replay binary is handled the same way.
 - **Commands are not recorded.** A `tea.Cmd` is a function, not data, so
   `Update` forwards it to the caller but does not execute or store it. The
   `cmd` event type is recognized for external tooling and skipped with a
